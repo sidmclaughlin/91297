@@ -1,0 +1,101 @@
+name: Deploy GeoServer
+on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/deploy-geoserver.yaml, packages/geoserver/**]
+  push:
+    branches: [main]
+    paths: [.github/workflows/deploy-geoserver.yaml, packages/geoserver/**]
+  workflow_dispatch:
+jobs:
+  create-environment-matrix:
+    name: Create Environment Matrix
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      environments: ${{ steps.generate-environment-matrix.outputs.environments }}
+    steps:
+      - name: Generate Environment Matrix
+        id: generate-environment-matrix
+        run: |
+          echo "ENVIRONMENTS=$(gh api -H "Accept: application/vnd.github+json" /repos/$GITHUB_REPOSITORY/environments | jq '[.environments[].name]' -c)" >> $GITHUB_OUTPUT
+  deploy:
+    name: Deploy to Environments
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+    needs:
+      - create-environment-matrix
+    strategy:
+      matrix:
+        environment: ${{ fromJSON(needs.create-environment-matrix.outputs.environments) }}
+    environment: ${{ matrix.environment }}
+    steps:
+      - name: Configure Server
+        uses: appleboy/ssh-action@master
+        env:
+          NGINX_SERVER_NAME_BASE64: ${{ secrets.NGINX_SERVER_NAME_BASE64 }}
+          # kartoza/postgis env variables https://github.com/kartoza/docker-postgis
+          ALLOW_IP_RANGE: 0.0.0.0/0
+          POSTGIS_VERSION_TAG: 14-3.1
+          POSTGRES_DB: gis,gwc
+          POSTGRES_USER: docker
+          POSTGRES_PASS: docker
+          POSTGRES_PORT: 32767
+
+          # Generic Env variables
+          GS_VERSION: 2.21.2
+          GEOSERVER_ADMIN_PASSWORD: myawesomegeoserver
+          GEOSERVER_ADMIN_USER: admin
+          GEOSERVER_DATA_DIR: /opt/geoserver/data_dir
+          GEOWEBCACHE_CACHE_DIR: /opt/geoserver/data_dir/gwc
+          INITIAL_MEMORY: 500M
+          MAXIMUM_MEMORY: 1G
+          SAMPLE_DATA: true
+          HTTP_SCHEME: https
+        with:
+          host: '${{ secrets.DO_SERVER_IP }}'
+          port: '${{ secrets.DO_SERVER_PORT }}'
+          username: '${{ secrets.DO_USERNAME }}'
+          key: '${{ secrets.DO_SERVER_SSH_KEY }}'
+          envs: NGINX_SERVER_NAME_BASE64,POSTGIS_VERSION_TAG,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASS,ALLOW_IP_RANGE,POSTGRES_PORT,GS_VERSION,GEOSERVER_ADMIN_PASSWORD,GEOSERVER_ADMIN_USER,GEOSERVER_DATA_DIR,GEOWEBCACHE_CACHE_DIR,INITIAL_MEMORY,MAXIMUM_MEMORY,SAMPLE_DATA,HTTP_SCHEME
+          script: |
+            export NGINX_SERVER_NAME=$(echo $NGINX_SERVER_NAME_BASE64 | base64 --decode)
+            export ALLOW_IP_RANGE=$(echo $ALLOW_IP_RANGE)
+            export POSTGRES_DB=$(echo $POSTGRES_DB)
+            export POSTGRES_USER=$(echo $POSTGRES_USER)
+            export POSTGRES_PASS=$(echo $POSTGRES_PASS)
+            export POSTGRES_PORT=$(echo $POSTGRES_PORT)
+            export POSTGIS_VERSION_TAG=$(echo $POSTGIS_VERSION_TAG)
+            export GS_VERSION=$(echo $GS_VERSION)
+            export GEOSERVER_ADMIN_PASSWORD=$(echo $GEOSERVER_ADMIN_PASSWORD)
+            export GEOSERVER_ADMIN_USER=$(echo $GEOSERVER_ADMIN_USER)
+            export GEOSERVER_DATA_DIR=$(echo $GEOSERVER_DATA_DIR)
+            export GEOWEBCACHE_CACHE_DIR=$(echo $GEOWEBCACHE_CACHE_DIR)
+            export INITIAL_MEMORY=$(echo $INITIAL_MEMORY)
+            export MAXIMUM_MEMORY=$(echo $MAXIMUM_MEMORY)
+            export SAMPLE_DATA=$(echo $SAMPLE_DATA)
+            export HTTP_SCHEME=$(echo $HTTP_SCHEME)
+            export HTTP_PROXY_NAME=$(echo $NGINX_SERVER_NAME)
+
+            # Install docker if it doesn't exist
+            which docker || (curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sudo sh /tmp/get-docker.sh)
+
+            # If `geoserver` directory exists, cd and pull, else clone and cd
+            if cd /var/www/geoserver; then git pull; else git clone https://github.com/sidmclaughlin/91297.git /var/www/geoserver && cd /var/www/geoserver; fi
+
+            # If $NGINX_SERVER_NAME.conf doesn't exist, create one using the standard, http template
+            [ -f packages/geoserver/nginx/config/$NGINX_SERVER_NAME.conf ] || envsubst '$NGINX_SERVER_NAME' < packages/geoserver/nginx/templates/nginx.conf.template > packages/geoserver/nginx/config/$NGINX_SERVER_NAME.conf
+
+            # Bring up containers
+            docker compose -f packages/geoserver/docker-compose.yml up -d
+
+            # Create/Renew certificates if necessary
+            docker compose -f packages/geoserver/docker-compose.yml run --rm  certbot certonly --non-interactive --agree-tos --register-unsafely-without-email --webroot --webroot-path /var/www/certbot/ -d $NGINX_SERVER_NAME
+
+            # Update $NGINX_SERVER_NAME.conf with the contents of the enhanced, https template
+            envsubst '$NGINX_SERVER_NAME' < packages/geoserver/nginx/templates/nginx-ssl.conf.template > packages/geoserver/nginx/config/$NGINX_SERVER_NAME.conf
+
+            # Reload nginx without downtime
+            docker exec -i nginx nginx -s reload

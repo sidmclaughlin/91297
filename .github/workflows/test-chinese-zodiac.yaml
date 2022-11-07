@@ -1,0 +1,23 @@
+name: Test Chinese Zodiac
+on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/test-chinese-zodiac.yaml, packages/chinese-zodiac/**]
+  push:
+    branches: [main]
+    paths: [.github/workflows/test-chinese-zodiac.yaml, packages/chinese-zodiac/**]
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      - name: Install Dependencies
+        run: npm install
+      - name: Run Tests
+        run: npx jest --coverage

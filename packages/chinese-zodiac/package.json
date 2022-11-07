@@ -1,0 +1,9 @@
+{
+  "name": "@91297/chinese-zodiac",
+  "private": true,
+  "description": "Unit tests for chinese zodiac code at https://rosettacode.org/wiki/Chinese_zodiac#ES6",
+  "author": "Sid McLaughlin <sid.mclaughlin@gov.bc.ca>",
+  "scripts": {
+    "test": "jest"
+  }
+}
